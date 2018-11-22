@@ -5,3 +5,11 @@ authors = ["Erlend Tobiassen <erlend.tobiassen@gmail.com>"]
 
 [dependencies]
 ndarray = "0.12.0"
+ndarray-npy = "0.3.0"
+rand = "0.6.0"
+rayon = "1.0.3"
+num-integer = "0.1"
+tensorflow = "0.11.0"
+
+[dev-dependencies]
+chrono = "0.4.6"

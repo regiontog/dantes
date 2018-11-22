@@ -1,19 +1,20 @@
 use ndarray::Array1;
 
-use super::{Perspective, Policy};
-use mcts::Action;
+use super::{Action, Perspective};
+use policies::Policy;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub(crate) struct NodeId {
     index: usize,
 }
 
+#[derive(Debug)]
 pub(crate) struct Node {
     prior_probabilities: Array1<f64>,
     scores: Array1<f64>,
     visits: Array1<f64>,
     children: Option<Vec<NodeId>>,
-    parent: Option<NodeId>,
+    pub(crate) parent: Option<NodeId>,
     index_in_parent: usize,
 }
 
@@ -39,31 +40,66 @@ impl Node {
         self.children.is_some()
     }
 
-    fn best_child<A: Action>(
+    pub(crate) fn has_children(&self) -> bool {
+        self.children
+            .as_ref()
+            .map(|children| children.len() > 0)
+            .unwrap_or(false)
+    }
+
+    fn best_child<P: Policy, A: Action>(
         &self,
         perspective: Perspective,
         self_visits: f64,
-        policy: impl Policy,
         actions: &[A],
     ) -> (NodeId, A) {
-        let action = perspective
-            .minmax_arg(policy.evaluate(
-                &self.prior_probabilities,
-                &self.scores,
-                &self.visits,
-                self_visits,
-            )).expect("There to be more than 0 possible child states!");
+        let num_actions = actions.len();
+
+        debug_assert!(Some(num_actions) == self.children.as_ref().map(|c| c.len()));
+
+        let action = P::evaluate(
+            perspective,
+            &self.prior_probabilities.slice(s![..num_actions]),
+            &self.scores.slice(s![..num_actions]),
+            &self.visits.slice(s![..num_actions]),
+            self_visits,
+        ).expect("There to be more than 0 possible actions!");
 
         (
+            // Unwrap is safe so long as the expect above is clear
             self.children
                 .as_ref()
                 .expect("Cannot find best child of unexpanded node!")[action],
             actions[action],
         )
     }
+
+    pub(crate) fn distribution<P: Policy>(
+        &self,
+        perspective: Perspective,
+        self_visits: f64,
+    ) -> Array1<f64> {
+        let num_actions = self
+            .children
+            .as_ref()
+            .map(|c| c.len())
+            .expect("Cannot find distribution of unexpanded node!");
+
+        P::distribution(
+            perspective,
+            &self.prior_probabilities.slice(s![..num_actions]),
+            &self.scores.slice(s![..num_actions]),
+            &self.visits.slice(s![..num_actions]),
+            self_visits,
+        )
+    }
+
+    fn set_prior_probabilities(&mut self, prior_probabilities: Array1<f64>) {
+        self.prior_probabilities = prior_probabilities;
+    }
 }
 
-pub(crate) struct Arena {
+pub struct Arena {
     root_visits: f64,
     root_score: f64,
     root_id: NodeId,
@@ -73,7 +109,7 @@ pub(crate) struct Arena {
 
 impl Arena {
     pub(crate) fn with_root(max_children: usize) -> Self {
-        let this = Arena {
+        let mut this = Arena {
             root_visits: 0.,
             root_score: 0.,
             root_id: NodeId { index: 0 },
@@ -94,7 +130,7 @@ impl Arena {
             .push(Node::new(self.max_children, parent, index_in_parent));
 
         NodeId {
-            index: self.nodes.len(),
+            index: self.nodes.len() - 1,
         }
     }
 
@@ -106,8 +142,8 @@ impl Arena {
         self.root_id
     }
 
-    fn expand_node(&mut self, node: NodeId, num_childs: usize) {
-        debug_assert!(num_childs < self.max_children);
+    pub(crate) fn expand_node(&mut self, node: NodeId, num_childs: usize) {
+        debug_assert!(num_childs <= self.max_children);
 
         let children = (0..num_childs)
             .map(|i| self.create_node(Some(node), i))
@@ -120,56 +156,67 @@ impl Arena {
         &self.nodes[node.index]
     }
 
-    pub(crate) fn best_child<A: Action>(
+    pub(crate) fn best_child<P: Policy, A: Action>(
         &self,
         perspective: Perspective,
         node: NodeId,
-        policy: impl Policy,
         actions: &[A],
     ) -> (NodeId, A) {
-        self.nodes[node.index].best_child(perspective, self.visits(node), policy, actions)
+        self.nodes[node.index].best_child::<P, _>(perspective, self.visits(node), actions)
+    }
+
+    pub(crate) fn distribution<P: Policy>(
+        &self,
+        perspective: Perspective,
+        node: NodeId,
+    ) -> Array1<f64> {
+        self.nodes[node.index].distribution::<P>(perspective, self.visits(node))
+    }
+
+    pub(crate) fn set_prior_probabilities(
+        &mut self,
+        node: NodeId,
+        prior_probabilities: Array1<f64>,
+    ) {
+        self.nodes[node.index].set_prior_probabilities(prior_probabilities);
     }
 
     fn visits(&self, node: NodeId) -> f64 {
-        if node == self.root_id {
-            self.root_visits
-        } else {
-            let n = &self.nodes[node.index];
-            let parent = &self.nodes[n
-                                         .parent
-                                         .expect("All non-root nodes should have a parent!")
-                                         .index];
-            parent.visits[n.index_in_parent]
+        match self.nodes[node.index].parent {
+            None => {
+                debug_assert!(node == self.root_id);
+                self.root_visits
+            }
+            Some(parent) => {
+                let index = self.nodes[node.index].index_in_parent;
+                self.nodes[parent.index].visits[index]
+            }
         }
     }
 
-    fn visit(&mut self, node: NodeId) {
-        if node == self.root_id {
-            self.root_visits += 1.
-        } else {
-            let parent_id = self.nodes[node.index].parent;
-            let index = self.nodes[node.index].index_in_parent;
-
-            let parent = &mut self.nodes[parent_id
-                                             .expect("All non-root nodes should have a parent!")
-                                             .index];
-
-            parent.visits[index] += 1.
+    pub(crate) fn visit(&mut self, node: NodeId) {
+        match self.nodes[node.index].parent {
+            None => {
+                debug_assert!(node == self.root_id);
+                self.root_visits += 1.;
+            }
+            Some(parent) => {
+                let index = self.nodes[node.index].index_in_parent;
+                self.nodes[parent.index].visits[index] += 1.;
+            }
         }
     }
 
-    fn add_score(&mut self, node: NodeId, score: f64) {
-        if node == self.root_id {
-            self.root_score += score
-        } else {
-            let parent_id = self.nodes[node.index].parent;
-            let index = self.nodes[node.index].index_in_parent;
-
-            let parent = &mut self.nodes[parent_id
-                                             .expect("All non-root nodes should have a parent!")
-                                             .index];
-
-            parent.scores[index] += score
+    pub(crate) fn add_score(&mut self, node: NodeId, score: f64) {
+        match self.nodes[node.index].parent {
+            None => {
+                debug_assert!(node == self.root_id);
+                self.root_score += score
+            }
+            Some(parent) => {
+                let index = self.nodes[node.index].index_in_parent;
+                self.nodes[parent.index].scores[index] += score;
+            }
         }
     }
 }

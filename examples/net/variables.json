@@ -1,0 +1,1 @@
+{"x": "x:0", "y": "y:0", "y_": "y_/Softmax:0", "train": "Adam", "variables": ["fully_connected/weights:0", "fully_connected/bias:0", "fully_connected_1/weights:0", "fully_connected_1/bias:0", "fully_connected_2/weights:0", "fully_connected_2/bias:0", "fully_connected_3/weights:0", "fully_connected_3/bias:0", "y_/weights:0", "y_/bias:0"]}
