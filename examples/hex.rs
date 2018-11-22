@@ -439,8 +439,8 @@ impl TensorflowConverter for Hex {
 const BATCH_SIZE: usize = 100;
 
 fn main() {
-    let m = 100;
-    let i = 10;
+    let m = 10;
+    let i = 1;
 
     let start_date: DateTime<Local> = Local::now();
 
@@ -467,20 +467,21 @@ fn main() {
                 None => unreachable!(),
                 Some(action) => {
                     game = hex.take_action(&game, action);
-                    Hex::describe_move(&game, action);
-                    println!("{}\n", game.1);
+                    // Hex::describe_move(&game, action);
+                    // println!("{}\n", game.1);
                 }
             }
         }
 
-        println!("Game over! Winner is: {:?}", hex.result(&game));
+        println!("Game {} over! Winner is: {:?}", game_num, hex.result(&game));
 
         mcts.mut_evaluator().train(replay_buffer);
 
         if game_num % i == 0 {
             mcts.mut_evaluator()
                 .save(
-                    &format!("examples/net/{:?}-{}", start_date, game_num),
+                    &format!("examples/net/output/saved/{:?}", start_date),
+                    &format!("{}.pyz", game_num),
                     &[
                         "fully_connected/weights:0",
                         "fully_connected/bias:0",

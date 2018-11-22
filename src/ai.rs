@@ -104,8 +104,14 @@ impl<G: TensorflowConverter, P: Policy> TensorflowEvaluator<G, P> {
         Ok(Self::new(game, graph, session))
     }
 
-    pub fn save(&mut self, filename: &str, variables: &[&str]) -> Result<(), WriteNpzError> {
-        let mut npz = NpzWriter::new(File::create(filename)?);
+    pub fn save(
+        &mut self,
+        dir: &str,
+        filename: &str,
+        variables: &[&str],
+    ) -> Result<(), WriteNpzError> {
+        std::fs::create_dir_all(dir)?;
+        let mut npz = NpzWriter::new(File::create(Path::new(dir).join(filename))?);
 
         for var in variables {
             let mut split = var.split(":");
