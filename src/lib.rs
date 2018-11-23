@@ -61,7 +61,7 @@ pub enum Perspective {
 }
 
 impl Perspective {
-    fn maybe_negate<F>(self, array: Array1<F>) -> Array1<F>
+    pub fn maybe_negate<F>(self, array: Array1<F>) -> Array1<F>
     where
         F: ::std::ops::Neg<Output = F>,
         F: Copy,

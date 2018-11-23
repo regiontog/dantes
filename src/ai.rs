@@ -174,15 +174,24 @@ impl<G: TensorflowConverter, P: Policy> TensorflowEvaluator<G, P> {
         Ok(())
     }
 
-    pub fn train(&mut self, replay_buffer: &Vec<(FullState<G>, Array1<f64>)>) {
+    pub fn train(&mut self, replay_buffer: &Vec<(FullState<G>, Array1<f64>)>)
+    where
+        G::GameState: std::fmt::Display,
+        G::D: std::ops::Deref<Target = [f64]>,
+    {
         let (tx, ty) = self
             .converter
             .select(replay_buffer.into_iter().map(|(state, dist)| {
-                (
-                    self.converter.nn_state_representation(&state),
-                    self.converter
-                        .normalize_distribution(&state, dist.to_owned()),
-                )
+                let s = self.converter.nn_state_representation(&state);
+
+                let d = self
+                    .converter
+                    .normalize_distribution(&state, dist.to_owned());
+
+                // println!("\n{}", state.1);
+                // println!("{:?}", &*d);
+
+                (s, d)
             }));
 
         let mut args = SessionRunArgs::new();

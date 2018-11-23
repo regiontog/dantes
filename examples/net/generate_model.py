@@ -12,7 +12,7 @@ from hex import Hex
 
 topp = len(sys.argv) > 1
 
-n = 5
+n = 3
 hex = Hex(n)
 
 BATCH_SIZE = 100
@@ -27,26 +27,25 @@ def tprint(msg):
 
     return inner
 
-
 y_ = (pt.wrap(x)
-      .fully_connected(64, activation_fn=tf.nn.relu)
-      #   .fully_connected(1024, activation_fn=tf.nn.relu)
-      #   .dropout(0.7)
-      #   .fully_connected(1024, activation_fn=tf.nn.relu)
-      #   .dropout(0.7)
-      #   .fully_connected(1024, activation_fn=tf.nn.relu)
-      #   .dropout(0.7)
-      #   .fully_connected(512, activation_fn=tf.nn.relu)
-      #   .dropout(0.7)
-      #   .fully_connected(256, activation_fn=tf.nn.relu)
-      .fully_connected(64, activation_fn=tf.nn.relu)
-      .fully_connected(n**2, activation_fn=tf.nn.softmax, name="y_")
+        .fully_connected(64, activation_fn=tf.nn.relu)
+        # .fully_connected(1024, activation_fn=tf.nn.relu)
+        # .dropout(0.7)
+        # .fully_connected(1024, activation_fn=tf.nn.relu)
+        # .dropout(0.7)
+        # .fully_connected(1024, activation_fn=tf.nn.relu)
+        # .dropout(0.7)
+        # .fully_connected(512, activation_fn=tf.nn.relu)
+        # .dropout(0.7)
+        .fully_connected(256, activation_fn=tf.nn.relu)
+        .fully_connected(64, activation_fn=tf.nn.relu)
+        .fully_connected(n**2, activation_fn=tf.nn.softmax, name="y_")
       )
 
 
 loss = tf.losses.mean_squared_error(y, y_)
 
-optimizer = tf.train.GradientDescentOptimizer(0.001)
+optimizer = tf.train.AdamOptimizer(0.1)
 
 train_op = pt.apply_optimizer(optimizer, losses=[loss])
 
@@ -130,9 +129,12 @@ if __name__ == "__main__" and topp:
     players = {file.split(".")[0]: HexPlayer(
         os.path.join(dir, file)) for file in files}
 
+    played = set()
+
     for p1 in players:
+        played.add(p1)
         for p2 in players:
-            if p1 != p2:
+            if p2 not in played:
                 wins = play(100, players[p1], players[p2])
 
                 wins = {

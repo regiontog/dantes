@@ -51,15 +51,10 @@ class Hex:
         return (1, np.zeros((self.n, self.n)), None)
 
     def action_from_distribution(self, state, distribution):
-        (player, _, _) = state
-
         actions = list(self.action_space(state))
 
         distribution = np.take(distribution, list(map(
             lambda action: self.action_indices[action], actions)))
-
-        if player == 2:
-            distribution = -distribution
 
         return actions[np.argmax(distribution)]
 

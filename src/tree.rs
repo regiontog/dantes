@@ -63,7 +63,14 @@ impl Node {
             &self.scores.slice(s![..num_actions]),
             &self.visits.slice(s![..num_actions]),
             self_visits,
-        ).expect("There to be more than 0 possible actions!");
+        ).unwrap_or_else(|| {
+            println!("{}", num_actions);
+            println!("{:?}", self.prior_probabilities);
+            println!("{:?}", self.scores);
+            println!("{:?}", self.visits);
+            println!("{:?}", self_visits);
+            panic!("There to be more than 0 possible actions!");
+        });
 
         (
             // Unwrap is safe so long as the expect above is clear

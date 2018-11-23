@@ -14,14 +14,13 @@ use std::collections::HashSet;
 use chrono::{DateTime, Local};
 use ndarray::Array1;
 use rand::seq::{IteratorRandom, SliceRandom};
-use serde_json::Value;
 use tensorflow::Tensor;
 
 use dantes::ai::{BestProbability, TensorflowConverter, TensorflowEvaluator, UCTAI};
 use dantes::evaluators::StateEvaluator;
 use dantes::mcts::MonteCarloTreeSearch;
-use dantes::policies::{BestQuality, MinMax, WeightedRandom};
-use dantes::{FullState, Game, GameResult, Player};
+use dantes::policies::{BestQuality, MinMax, RandomS, WeightedRandom, UCT};
+use dantes::{FullState, Game, GameResult, Perspective, Player};
 
 struct Hex {
     full_action_space: Box<[<Hex as Game>::GameAction]>,
@@ -373,7 +372,12 @@ impl TensorflowConverter for Hex {
 
             let norm = f64::sqrt(legal_action_dist.mapv(|v| v.powi(2)).scalar_sum());
 
-            legal_action_dist / norm
+            let perspective = match state.0 {
+                Player::Player1 => Perspective::PreferPositive,
+                Player::Player2 => Perspective::PreferNegative,
+            };
+
+            perspective.maybe_negate(legal_action_dist / norm)
         })
     }
 
@@ -382,15 +386,26 @@ impl TensorflowConverter for Hex {
         state: &FullState<Self>,
         mut distribution: Array1<f64>,
     ) -> Self::D {
-        let min = *distribution
-            .iter()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(::std::cmp::Ordering::Greater))
-            .unwrap_or(&0.);
+        if distribution.len() == 1 {
+            distribution[0] = 1.;
+        } else {
+            let perspective = match state.0 {
+                Player::Player1 => Perspective::PreferPositive,
+                Player::Player2 => Perspective::PreferNegative,
+            };
 
-        distribution = distribution.mapv(|v| v - min);
+            distribution = perspective.maybe_negate(distribution);
 
-        let norm = f64::sqrt(distribution.mapv(|v| v.powi(2)).scalar_sum());
-        distribution = distribution / norm;
+            let min = *distribution
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(::std::cmp::Ordering::Greater))
+                .unwrap_or(&0.);
+
+            distribution = distribution.mapv(|v| v - min);
+
+            let norm = f64::sqrt(distribution.mapv(|v| v.powi(2)).scalar_sum());
+            distribution = distribution / norm;
+        }
 
         // Set all illegal moves to 0
         distribution = self.with_action_space(state, |actions| {
@@ -458,12 +473,13 @@ fn main() {
         serde_json::from_reader(std::fs::File::open("examples/net/variables.json").unwrap())
             .unwrap();
 
-    let m = 200;
-    let i = 20;
+    let m = 2000;
+    let i = 50;
+    let n = 3;
 
     let start_date: DateTime<Local> = Local::now();
 
-    let hex = Hex::new(5);
+    let hex = Hex::new(n);
 
     let mut ai = TensorflowEvaluator::<_, BestProbability<MinMax>>::load_model_from_file(
         hex.clone(),
@@ -480,27 +496,28 @@ fn main() {
         &ops.variables.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
     ).unwrap();
 
-    let mut mcts = MonteCarloTreeSearch::new(hex.clone(), ai);
+    // let mut mcts = MonteCarloTreeSearch::new(hex.clone(), ai);
+    let mut mcts = MonteCarloTreeSearch::random_rollout(&hex);
     let mut replay_buffer = vec![];
 
     for game_num in 1..=m {
         let mut game = hex.initial_state();
 
         while let GameResult::Ongoing = hex.result(&game) {
-            let tree = mcts.par_simulate::<UCTAI<WeightedRandom>>(&game, 6000, 100);
+            let tree = mcts.par_simulate::<UCT<WeightedRandom>>(&game, 200000, 1000);
             let d = mcts.distribution::<BestQuality<MinMax>>(&tree, &game);
 
-            println!("{}", mcts.mut_evaluator().evaluate(&game));
-            println!("{}", hex.normalize_distribution(&game, d.clone()));
+            // println!("{}", mcts.mut_evaluator().evaluate(&game));
+            // println!("{}", hex.normalize_distribution(&game, d.clone()));
 
             replay_buffer.push((game.clone(), d.clone()));
 
-            match mcts.best_action::<MinMax>(&game, &d) {
+            match mcts.best_action::<WeightedRandom>(&game, &d) {
                 None => unreachable!(),
                 Some(action) => {
                     game = hex.take_action(&game, action);
-                    Hex::describe_move(&game, action);
-                    println!("{}\n", game.1);
+                    // Hex::describe_move(&game, action);
+                    // println!("{}\n", game.1);
                 }
             }
         }
@@ -508,10 +525,13 @@ fn main() {
         println!("{}\n", game.1);
         println!("Game {} over! Winner is: {:?}", game_num, hex.result(&game));
 
-        mcts.mut_evaluator().train(&replay_buffer);
+        // mcts.mut_evaluator().train(&replay_buffer);
+        ai.train(&replay_buffer);
 
         if game_num % i == 0 {
-            mcts.mut_evaluator()
+            println!("Saving vars");
+            ai
+                // mcts.mut_evaluator()
                 .save(
                     &format!("examples/net/output/saved/{:?}", start_date),
                     &format!("{}.pyz", game_num),
@@ -519,6 +539,6 @@ fn main() {
                 ).unwrap();
         }
 
-        println!("Trained net");
+        // println!("Trained net");
     }
 }

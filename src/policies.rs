@@ -3,12 +3,27 @@ use std::marker::PhantomData;
 
 use ndarray::{Array1, ArrayView1};
 use rand;
+use rand::seq::SliceRandom;
 use rand::Rng;
 
 use super::Perspective;
 
 pub trait SelectionStrategy {
     fn select(Perspective, &Array1<f64>) -> Option<usize>;
+}
+
+pub struct RandomS;
+
+impl SelectionStrategy for RandomS {
+    fn select(perspective: Perspective, distribution: &Array1<f64>) -> Option<usize> {
+        let len = distribution.len();
+
+        if len != 0 {
+            Some(rand::thread_rng().gen_range(0, len))
+        } else {
+            None
+        }
+    }
 }
 
 pub struct MinMax;
@@ -34,22 +49,14 @@ impl SelectionStrategy for WeightedRandom {
             .iter()
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(::std::cmp::Ordering::Greater))?;
 
-        distribution = distribution.mapv(|v| v - min);
+        distribution = distribution.mapv(|v| v - min + 1.);
 
-        let weight_sum = distribution.scalar_sum();
-        let mut target = rand::thread_rng().gen::<f64>() * weight_sum;
+        let indices: Vec<_> = (0..distribution.len()).collect();
 
-        distribution
-            .iter()
-            .enumerate()
-            .find(|(_, &v)| {
-                if v >= target {
-                    true
-                } else {
-                    target -= v;
-                    false
-                }
-            }).map(|(index, _)| index)
+        indices
+            .choose_weighted(&mut rand::thread_rng(), |&i| distribution[i])
+            .ok()
+            .map(|&i| i)
     }
 }
 
