@@ -178,6 +178,8 @@ impl<G: Game, E: StateEvaluator<G>> MonteCarloTreeSearch<G, E> {
             }
         }
 
+        // println!("tree: {:?}", tree.borrow(tree.get_root_id()));
+
         tree
     }
 

@@ -120,7 +120,7 @@ impl<S: SelectionStrategy> QU for UCT<S> {
         visits: &ArrayView1<f64>,
         _parent_visits: f64,
     ) -> Array1<f64> {
-        scores / &visits.mapv(|v| v + 1.).view()
+        scores.to_owned()
     }
 
     fn u(
@@ -173,6 +173,6 @@ impl<S: SelectionStrategy> Policy for BestQuality<S> {
         visits: &ArrayView1<f64>,
         _parent_visits: f64,
     ) -> Array1<f64> {
-        scores / &visits.mapv(|v| v + 1.).view()
+        scores.to_owned()
     }
 }

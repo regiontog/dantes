@@ -23,43 +23,83 @@ pub trait TensorflowConverter: Game {
 }
 
 struct WSession {
-    session: Session,
+    session: UnsafeCell<Session>,
+}
+
+impl WSession {
+    unsafe fn get(&self) -> &mut Session {
+        &mut *self.session.get()
+    }
 }
 
 impl std::ops::Deref for WSession {
     type Target = Session;
 
     fn deref(&self) -> &Session {
-        &self.session
+        unsafe { &*self.session.get() }
     }
 }
 
 impl std::ops::DerefMut for WSession {
     fn deref_mut(&mut self) -> &mut Session {
-        &mut self.session
+        unsafe { &mut *self.session.get() }
     }
 }
 
 unsafe impl Send for WSession {}
+unsafe impl Sync for WSession {}
 
 pub struct TensorflowEvaluator<G, P> {
     graph: Graph,
     converter: G,
-    session: Mutex<UnsafeCell<WSession>>,
+    session: WSession,
     phantom: PhantomData<(G, P)>,
+    x: String,
+    y: String,
+    y_: String,
+    train: String,
+}
+
+fn split_op(op: &str) -> (String, i32) {
+    let mut split = op.split(":");
+    let name = split.next().unwrap();
+    let index = split.next().unwrap();
+
+    (name.to_owned(), str::parse(index).unwrap())
 }
 
 impl<G: TensorflowConverter, P: Policy> TensorflowEvaluator<G, P> {
-    pub fn new(converter: G, graph: Graph, session: Session) -> Self {
+    pub fn new(
+        converter: G,
+        graph: Graph,
+        session: Session,
+        x: String,
+        y: String,
+        y_: String,
+        train: String,
+    ) -> Self {
         TensorflowEvaluator {
+            x,
+            y,
+            y_,
+            train,
             graph,
             converter,
-            session: Mutex::new(UnsafeCell::new(WSession { session })),
+            session: WSession {
+                session: UnsafeCell::new(session),
+            },
             phantom: PhantomData,
         }
     }
 
-    pub fn load_model_from_file(game: G, filename: &str) -> Result<Self, std::io::Error> {
+    pub fn load_model_from_file(
+        game: G,
+        filename: &str,
+        x: String,
+        y: String,
+        y_: String,
+        train: String,
+    ) -> Result<Self, std::io::Error> {
         if !Path::new(filename).exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -101,7 +141,7 @@ impl<G: TensorflowConverter, P: Policy> TensorflowEvaluator<G, P> {
                 Ok(())
             }).unwrap();
 
-        Ok(Self::new(game, graph, session))
+        Ok(Self::new(game, graph, session, x, y, y_, train))
     }
 
     pub fn save(
@@ -114,22 +154,16 @@ impl<G: TensorflowConverter, P: Policy> TensorflowEvaluator<G, P> {
         let mut npz = NpzWriter::new(File::create(Path::new(dir).join(filename))?);
 
         for var in variables {
-            let mut split = var.split(":");
-            let name = split.next().unwrap();
-            let index = str::parse(split.next().unwrap()).unwrap();
+            let (name, index) = split_op(var);
 
             let tensor = self
                 .graph
-                .operation_by_name_required(name)
+                .operation_by_name_required(&name)
                 .and_then(|tf_var| {
                     let mut args = SessionRunArgs::new();
                     let result = args.request_fetch(&tf_var, index);
 
-                    let session = self.session.get_mut().expect("Lock to not be poisoned.");
-
-                    unsafe {
-                        (*session.get()).run(&mut args)?;
-                    }
+                    self.session.run(&mut args)?;
 
                     Ok(args.fetch::<f64>(result)?)
                 }).unwrap();
@@ -140,32 +174,35 @@ impl<G: TensorflowConverter, P: Policy> TensorflowEvaluator<G, P> {
         Ok(())
     }
 
-    pub fn train(&mut self, replay_buffer: Vec<(FullState<G>, Array1<f64>)>) {
+    pub fn train(&mut self, replay_buffer: &Vec<(FullState<G>, Array1<f64>)>) {
         let (tx, ty) = self
             .converter
             .select(replay_buffer.into_iter().map(|(state, dist)| {
                 (
                     self.converter.nn_state_representation(&state),
-                    self.converter.normalize_distribution(&state, dist),
+                    self.converter
+                        .normalize_distribution(&state, dist.to_owned()),
                 )
             }));
 
         let mut args = SessionRunArgs::new();
 
+        let (xname, xi) = split_op(&self.x);
+
         self.graph
-            .operation_by_name_required("x")
+            .operation_by_name_required(&xname)
             .and_then(|x| {
-                let y = self.graph.operation_by_name_required("y")?;
+                let (yname, yi) = split_op(&self.y);
 
-                args.add_feed(&x, 0, &tx);
-                args.add_feed(&y, 0, &ty);
+                let y = self.graph.operation_by_name_required(&yname)?;
 
-                let train = args.request_fetch(&self.graph.operation_by_name_required("Adam")?, 0);
+                args.add_feed(&x, xi, &tx);
+                args.add_feed(&y, yi, &ty);
 
-                let session = self.session.get_mut().expect("Lock to not be poisoned.");
-                unsafe {
-                    (*session.get()).run(&mut args)?;
-                }
+                let train =
+                    args.request_fetch(&self.graph.operation_by_name_required(&self.train)?, 0);
+
+                self.session.run(&mut args)?;
 
                 args.fetch::<i32>(train)?;
 
@@ -182,26 +219,18 @@ impl<G: TensorflowConverter, P: Policy> StateEvaluator<G> for TensorflowEvaluato
 
         let mut args = SessionRunArgs::new();
 
-        // println!(
-        //     "{:?}",
-        //     self.graph
-        //         .operation_iter()
-        //         .map(|o| o.name())
-        //         .collect::<Vec<_>>()
-        // );
-        // println!("");
+        let (xname, xi) = split_op(&self.x);
+        let (yname, yi) = split_op(&self.y_);
 
         self.graph
-            .operation_by_name_required("x")
+            .operation_by_name_required(&xname)
             .and_then(|x| {
-                args.add_feed(&x, 0, &tensor);
+                args.add_feed(&x, xi, &tensor);
 
-                let y =
-                    args.request_fetch(&self.graph.operation_by_name_required("y_/Softmax")?, 0);
+                let y = args.request_fetch(&self.graph.operation_by_name_required(&yname)?, yi);
 
-                let session = self.session.lock().expect("Lock to not be poisoned.");
                 unsafe {
-                    (*session.get()).run(&mut args)?;
+                    self.session.get().run(&mut args)?;
                 }
 
                 Ok(self.converter.to_distribution(state, args.fetch(y)?))

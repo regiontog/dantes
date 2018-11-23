@@ -2,7 +2,11 @@ extern crate chrono;
 extern crate dantes;
 extern crate ndarray;
 extern crate rand;
+extern crate serde_json;
 extern crate tensorflow;
+
+#[macro_use]
+extern crate serde_derive;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -10,9 +14,11 @@ use std::collections::HashSet;
 use chrono::{DateTime, Local};
 use ndarray::Array1;
 use rand::seq::{IteratorRandom, SliceRandom};
+use serde_json::Value;
 use tensorflow::Tensor;
 
 use dantes::ai::{BestProbability, TensorflowConverter, TensorflowEvaluator, UCTAI};
+use dantes::evaluators::StateEvaluator;
 use dantes::mcts::MonteCarloTreeSearch;
 use dantes::policies::{BestQuality, MinMax, WeightedRandom};
 use dantes::{FullState, Game, GameResult, Player};
@@ -436,30 +442,56 @@ impl TensorflowConverter for Hex {
     }
 }
 
-const BATCH_SIZE: usize = 100;
+const BATCH_SIZE: usize = 600;
+
+#[derive(Serialize, Deserialize)]
+struct Operators {
+    x: String,
+    y: String,
+    y_: String,
+    train: String,
+    variables: Vec<String>,
+}
 
 fn main() {
-    let m = 10;
-    let i = 1;
+    let ops: Operators =
+        serde_json::from_reader(std::fs::File::open("examples/net/variables.json").unwrap())
+            .unwrap();
+
+    let m = 200;
+    let i = 20;
 
     let start_date: DateTime<Local> = Local::now();
 
     let hex = Hex::new(5);
 
-    let ai = TensorflowEvaluator::<_, BestProbability<WeightedRandom>>::load_model_from_file(
+    let mut ai = TensorflowEvaluator::<_, BestProbability<MinMax>>::load_model_from_file(
         hex.clone(),
         "examples/net/model.pb",
+        ops.x,
+        ops.y,
+        ops.y_,
+        ops.train,
+    ).unwrap();
+
+    ai.save(
+        &format!("examples/net/output/saved/{:?}", start_date),
+        &format!("{}.pyz", 0),
+        &ops.variables.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
     ).unwrap();
 
     let mut mcts = MonteCarloTreeSearch::new(hex.clone(), ai);
+    let mut replay_buffer = vec![];
 
-    for game_num in 0..m {
+    for game_num in 1..=m {
         let mut game = hex.initial_state();
-        let mut replay_buffer = vec![];
 
         while let GameResult::Ongoing = hex.result(&game) {
-            let tree = mcts.par_simulate::<UCTAI<WeightedRandom>>(&game, 100, 10);
+            let tree = mcts.par_simulate::<UCTAI<WeightedRandom>>(&game, 6000, 100);
             let d = mcts.distribution::<BestQuality<MinMax>>(&tree, &game);
+
+            println!("{}", mcts.mut_evaluator().evaluate(&game));
+            println!("{}", hex.normalize_distribution(&game, d.clone()));
 
             replay_buffer.push((game.clone(), d.clone()));
 
@@ -467,33 +499,23 @@ fn main() {
                 None => unreachable!(),
                 Some(action) => {
                     game = hex.take_action(&game, action);
-                    // Hex::describe_move(&game, action);
-                    // println!("{}\n", game.1);
+                    Hex::describe_move(&game, action);
+                    println!("{}\n", game.1);
                 }
             }
         }
 
+        println!("{}\n", game.1);
         println!("Game {} over! Winner is: {:?}", game_num, hex.result(&game));
 
-        mcts.mut_evaluator().train(replay_buffer);
+        mcts.mut_evaluator().train(&replay_buffer);
 
         if game_num % i == 0 {
             mcts.mut_evaluator()
                 .save(
                     &format!("examples/net/output/saved/{:?}", start_date),
                     &format!("{}.pyz", game_num),
-                    &[
-                        "fully_connected/weights:0",
-                        "fully_connected/bias:0",
-                        "fully_connected_1/weights:0",
-                        "fully_connected_1/bias:0",
-                        "fully_connected_2/weights:0",
-                        "fully_connected_2/bias:0",
-                        "fully_connected_3/weights:0",
-                        "fully_connected_3/bias:0",
-                        "y_/weights:0",
-                        "y_/bias:0",
-                    ],
+                    &ops.variables.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
                 ).unwrap();
         }
 
